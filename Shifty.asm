@@ -62,28 +62,26 @@ W_TEMP      RES     1             ; variable used for context saving
 STATUS_TEMP RES     1             ; variable used for context saving
 
 .udata UDATA
-tmr_counter	RES		1			  ; Keeps track of the number of times the counter's overflowed.
-output_stor res     1             ; Storage for whatever we're outputting
-output_ctr  res     1             ; Count how many bits we've outputted
 src         res     1             ; some sort of source, may be modified when you call a function
 dst         res     1             ; some sort of destination, may be modified
 temp_2      res     1
 temp_3      res     1
 temp_ctr    res     1             ; Temp counter for whatever
 offset      res     1             ; some sort of offset into a pointer
-save        res     1             ; If you modify this change it back unless you're special
-
-max_brightness  res 1             ; Maximum brightness, gets set in the init code
+offset_RG   res     1             ; brightness_R + this = brightness_G
+offset_GB   res     1             ; brightness_G + this = brightness_B
+offset_RB   res     1             ; brightness_R + this = brightness_B
 
 .idata idata
 light_dir   db 0, 0               ; 1: light is going up 0: light is going down
 
 .fixed idata 0x20
-GPIO_s      RES     1             ; GPIO shadow
-TRISIO_s    RES     1             ; TRISIO shadow
-temp        res     1             ; Temps for whatever
+max_brightness  res 1             ; Maximum brightness, gets set in the init code
+temp            res 1             ; Temps for whatever
 brightness_step res 1
-brightness db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0; it looks like this initialization doesn't actually work
+brightness_R db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0; it looks like this initialization doesn't actually work
+brightness_G db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+brightness_B db 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 
 
 ;------------------------------------------------------------------------------
@@ -111,12 +109,22 @@ INT_VECTOR    CODE    0x0004  ; interrupt vector location
         MOVF    STATUS,w      ; move status register into W register
         MOVWF   STATUS_TEMP   ; save off contents of STATUS register
 
-; isr code can go here or be located as a call subroutine elsewhere
+        banksel INTCON
+        bcf		INTCON, GIE   ;Turn off all interrupts for the duration
 
+        call    brightness_lights_interrupt
+
+        banksel INTCON
+        movlw   0x00
+        movwf   TMR0
+        bcf     INTCON, T0IF
+        bsf		INTCON, GIE   ;Interrupts back on
+                  
         MOVF    STATUS_TEMP,w ; retrieve copy of STATUS register
         MOVWF   STATUS        ; restore pre-isr STATUS register contents
         SWAPF   W_TEMP,f
         SWAPF   W_TEMP,w      ; restore pre-isr W register contents
+
         RETFIE                ; return from interrupt
 
 
@@ -137,11 +145,14 @@ setup_timer
 		iorlw	b'10000000'		;we want ~GPPU=1 (disable pull-ups), TOCS=0, PSA=0 and prescaler=last three
         banksel OPTION_REG
 		movwf	OPTION_REG
+
+        banksel INTCON  ;Turn on the timer0 overflow interrupt
+        bsf     INTCON, T0IE
+        bsf     INTCON, GIE ;And the global interrupts
+
 clean_timer
 		banksel TMR0
 		clrf	TMR0			;Reset the timer to zero
-		banksel tmr_counter
-		clrf 	tmr_counter		;Clear the timer overflow counter
 		banksel	INTCON
 		bcf		INTCON, T0IF	;T0IF is the timer 0 overflow bit, make sure that's cleared.
 
@@ -167,24 +178,6 @@ setup_serial_clock
         banksel CCP1CON
         movwf   CCP1CON
 
-
-        return
-
-wait_a_bit
-timer
-		banksel INTCON
-		btfss	INTCON, T0IF	;Has the timer overflowed since we checked last?
-		goto	timer           ;Nope, so just keep on doing what we're doing
-
-		banksel	TMR0
-		clrf	TMR0				;Yep, it's overflowed; clear timer out
-
-        banksel INTCON
-		bcf		INTCON, T0IF		;Forget that it's overflowed
-
-		banksel	tmr_counter
-		incfsz	tmr_counter,F		;Add one to the pile of overfloweds
-		goto	timer   			;And go back if we haven't gone around
         return
 
 memcpy  ;takes an address in src, an address in dst, and copies a number of bytes equal to what's in w
@@ -222,330 +215,6 @@ memcpy_loop
 
         return
 
-brightness_lights   ;Takes an address in W that points to an array of bytes,
-                    ;then does a cycle of outputs based on the brightness values
-
-        banksel temp
-        clrf    temp ;we'll build our list of which lights are on in here,
-                     ;all lights start out on but once their brightness
-                     ;threshold is past they're off
-
-        banksel TRISIO
-        clrf    TRISIO
-
-        banksel max_brightness
-        movfw   max_brightness
-        banksel brightness_step ;We'll use this to loop over all the brightness values
-        movwf   brightness_step ;Also, everything is guaranteed to be in its bank.
-        bsf     T2CON, TMR2ON
-
-
-brightness_next_step
-        clrf    TMR2
-
-        clrf    temp
-        movfw   brightness+.0
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        ;srclk  low
-        movfw   brightness+.0
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.0
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        ;srclk  high
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.1
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.1
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.1
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.2
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.2
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.2
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.3
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.3
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.3
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.4
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.4
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.4
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.5
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.5
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.5
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.6
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.6
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.6
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.7
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.7
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.7
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.8
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.8
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.8
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.9
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.9
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.9
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.10
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.10
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.10
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.11
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.11
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.11
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.12
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.12
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.12
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.13
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.13
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.13
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.14
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.14
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.14
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-
-        clrf    temp
-        movfw   brightness+.15
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.15
-        subwf   brightness_step, W
-        rlf     temp, F
-
-        movfw   brightness+.15
-        subwf   brightness_step, W
-        btfsc   STATUS, C
-        bsf     temp, 5
-
-        movfw   temp
-        movwf   GPIO
-
-brightness_end_step
-
-        movlw   b'010000';
-        movwf   GPIO; Bang out the register clock
-        clrf    GPIO
-
-        decfsz  brightness_step, F
-        goto    brightness_next_step
-
-        bcf     T2CON, TMR2ON
-
-        return
-
-
 
 START
 		;Init
@@ -556,7 +225,7 @@ START
         banksel GPIO
         movwf   GPIO
 
-		movlw	h'FF'	;Everything is tristated
+		movlw	h'00'	;Everything is set to I/O
         banksel TRISIO
         movwf   TRISIO
 
@@ -570,8 +239,9 @@ START
         movlw   0x60
         banksel max_brightness
         movwf   max_brightness ; Initialize the maximum brightness
+        movwf   brightness_step ; and we start out at max brightness
 
-        movlw   brightness
+        movlw   brightness_R
         movwf   FSR
 
         movlw   0x10
@@ -582,6 +252,7 @@ START
         clrf    temp
 
         incf    temp, F ; First light will be at 1 brightness, we'll increment by 2 after that
+
 initialize_brightness
         banksel temp
         movfw   temp
@@ -602,10 +273,7 @@ initialize_brightness
         movwf   light_dir+1
 
 all_loop
-        movlw   brightness
-        call    brightness_lights
-
-        movlw   brightness
+        movlw   brightness_R
         movwf   FSR
 
         movlw   0x2
@@ -672,5 +340,325 @@ another_round
         
 
 finish
+
+
+
+brightness_lights_interrupt   ;Takes an address in W that points to an array of bytes,
+                              ;then does a cycle of outputs based on the brightness values
+
+        banksel brightness_step ; Everything is guaranteed to be in this bank
+        clrf    temp ;we'll build our list of which lights are on in here,
+                     ;all lights start out on but once their brightness
+                     ;threshold is past they're off
+
+        bsf     T2CON, TMR2ON
+
+brightness_next_step
+        clrf    TMR2
+
+        clrf    temp
+        movfw   brightness_G+.0
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.0
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.0
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.1
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.1
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.1
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.2
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.2
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.2
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.3
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.3
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.3
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.4
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.4
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.4
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.5
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.5
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.5
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.6
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.6
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.6
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.7
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.7
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.7
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.8
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.8
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.8
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.9
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.9
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.9
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.10
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.10
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.10
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.11
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.11
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.11
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.12
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.12
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.12
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.13
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.13
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.13
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.14
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.14
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.14
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+
+        clrf    temp
+        movfw   brightness_G+.15
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_R+.15
+        subwf   brightness_step, W
+        rlf     temp, F
+
+        movfw   brightness_B+.15
+        subwf   brightness_step, W
+        btfsc   STATUS, C
+        bsf     temp, 5
+
+        movfw   temp
+        movwf   GPIO
+
+brightness_end_step
+
+        movlw   b'010000';
+        movwf   GPIO; Bang out the register clock
+        clrf    GPIO
+
+        decfsz  brightness_step, F
+        goto    brightness_next_step
+
+        bcf     T2CON, TMR2ON ;Disable our pwm serial clock
+
+        ;If brightness_step was zero, reset it to max brightness
+        movfw   max_brightness
+        movwf   brightness_step
+
+        return
+
 
         END                       ; directive 'end of program'
