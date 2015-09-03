@@ -64,6 +64,8 @@ STATUS_TEMP RES     1             ; variable used for context saving
 .udata UDATA
 src         res     1             ; some sort of source, may be modified when you call a function
 dst         res     1             ; some sort of destination, may be modified
+lights_from res     1
+lights_offset res   1
 temp_2      res     1
 temp_3      res     1
 temp_ctr    res     1             ; Temp counter for whatever
@@ -215,8 +217,26 @@ memcpy_loop
 
         return
 
+setup_constants
+        movlw   brightness_R
+        sublw   brightness_B
+        banksel offset_RB
+        movwf   offset_RB
+
+        movlw   brightness_R
+        sublw   brightness_G
+        banksel offset_RG
+        movwf   offset_RG
+
+        movlw   brightness_G
+        sublw   brightness_B
+        banksel offset_GB
+        movwf   offset_GB
+        return
+
 
 START
+        call    setup_constants
 		;Init
 		call	setup_timer
         call    setup_serial_clock
@@ -244,6 +264,14 @@ START
         movlw   brightness_R
         movwf   FSR
 
+        movlw   brightness_G
+        banksel lights_from
+        movwf   lights_from
+        movlw   0x10
+        banksel lights_offset
+        movwf   lights_offset
+
+
         movlw   0x10
         banksel temp_ctr
         movwf   temp_ctr
@@ -261,6 +289,17 @@ initialize_brightness
         incf    temp, F
         incf    temp, F
 
+        movlw   0x10
+        addwf   FSR, F
+        banksel max_brightness
+        movfw   max_brightness
+        movwf   INDF ;g
+        movlw   0x10
+        addwf   FSR, F
+        clrf    INDF ;b
+        movlw   0x20
+        subwf   FSR, F
+
         incf    FSR, F
         
         banksel temp_ctr
@@ -273,6 +312,35 @@ initialize_brightness
         movwf   light_dir+1
 
 all_loop
+        movlw   0x10
+        movwf   temp_ctr
+slosh ; gradually decrease brightness_g and increase brightness_b, then reverse
+        banksel lights_from
+        movfw   lights_from
+        movwf   FSR
+
+        movf    INDF, F
+        btfsc   STATUS, Z
+        goto    slosh_swap_dir
+slosh_loop
+        banksel lights_offset
+        movfw   lights_offset
+        decf    INDF, F
+        addwf   FSR, F
+        incf    INDF, F
+        subwf   FSR, F
+        incf    FSR, F
+        decfsz  temp_ctr
+        goto    slosh_loop
+        goto    ripple
+
+slosh_swap_dir
+        movfw   lights_offset
+        addwf   lights_from, F
+        comf    lights_offset, F
+        incf    lights_offset, F
+
+ripple
         movlw   brightness_R
         movwf   FSR
 
@@ -351,22 +419,25 @@ brightness_lights_interrupt   ;Takes an address in W that points to an array of 
                      ;all lights start out on but once their brightness
                      ;threshold is past they're off
 
+        ;This is a bit weird but essentially what we do is turn on the PWM and
+        ;have that work as our shift input so we don't have to wobble the pin ourselves
         bsf     T2CON, TMR2ON
 
+        ;And then this is a giant unrolled loop
 brightness_next_step
         clrf    TMR2
 
         clrf    temp
-        movfw   brightness_G+.0
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.0, W
         rlf     temp, F
 
-        movfw   brightness_R+.0
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.0, W
         rlf     temp, F
 
-        movfw   brightness_B+.0
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.0, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -375,16 +446,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.1
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.1, W
         rlf     temp, F
 
-        movfw   brightness_R+.1
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.1, W
         rlf     temp, F
 
-        movfw   brightness_B+.1
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.1, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -393,16 +464,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.2
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.2, W
         rlf     temp, F
 
-        movfw   brightness_R+.2
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.2, W
         rlf     temp, F
 
-        movfw   brightness_B+.2
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.2, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -411,16 +482,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.3
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.3, W
         rlf     temp, F
 
-        movfw   brightness_R+.3
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.3, W
         rlf     temp, F
 
-        movfw   brightness_B+.3
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.3, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -429,16 +500,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.4
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.4, W
         rlf     temp, F
 
-        movfw   brightness_R+.4
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.4, W
         rlf     temp, F
 
-        movfw   brightness_B+.4
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.4, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -447,16 +518,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.5
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.5, W
         rlf     temp, F
 
-        movfw   brightness_R+.5
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.5, W
         rlf     temp, F
 
-        movfw   brightness_B+.5
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.5, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -465,16 +536,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.6
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.6, W
         rlf     temp, F
 
-        movfw   brightness_R+.6
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.6, W
         rlf     temp, F
 
-        movfw   brightness_B+.6
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.6, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -483,16 +554,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.7
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.7, W
         rlf     temp, F
 
-        movfw   brightness_R+.7
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.7, W
         rlf     temp, F
 
-        movfw   brightness_B+.7
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.7, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -501,16 +572,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.8
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.8, W
         rlf     temp, F
 
-        movfw   brightness_R+.8
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.8, W
         rlf     temp, F
 
-        movfw   brightness_B+.8
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.8, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -519,16 +590,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.9
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.9, W
         rlf     temp, F
 
-        movfw   brightness_R+.9
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.9, W
         rlf     temp, F
 
-        movfw   brightness_B+.9
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.9, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -537,16 +608,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.10
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.10, W
         rlf     temp, F
 
-        movfw   brightness_R+.10
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.10, W
         rlf     temp, F
 
-        movfw   brightness_B+.10
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.10, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -555,16 +626,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.11
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.11, W
         rlf     temp, F
 
-        movfw   brightness_R+.11
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.11, W
         rlf     temp, F
 
-        movfw   brightness_B+.11
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.11, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -573,16 +644,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.12
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.12, W
         rlf     temp, F
 
-        movfw   brightness_R+.12
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.12, W
         rlf     temp, F
 
-        movfw   brightness_B+.12
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.12, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -591,16 +662,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.13
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.13, W
         rlf     temp, F
 
-        movfw   brightness_R+.13
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.13, W
         rlf     temp, F
 
-        movfw   brightness_B+.13
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.13, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -609,16 +680,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.14
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.14, W
         rlf     temp, F
 
-        movfw   brightness_R+.14
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.14, W
         rlf     temp, F
 
-        movfw   brightness_B+.14
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.14, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -627,16 +698,16 @@ brightness_next_step
 
 
         clrf    temp
-        movfw   brightness_G+.15
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_G+.15, W
         rlf     temp, F
 
-        movfw   brightness_R+.15
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_R+.15, W
         rlf     temp, F
 
-        movfw   brightness_B+.15
-        subwf   brightness_step, W
+        movfw   brightness_step
+        subwf   brightness_B+.15, W
         btfsc   STATUS, C
         bsf     temp, 5
 
@@ -654,7 +725,7 @@ brightness_end_step
 
         bcf     T2CON, TMR2ON ;Disable our pwm serial clock
 
-        ;If brightness_step was zero, reset it to max brightness
+        ;brightness_step was zero, reset it to max brightness
         movfw   max_brightness
         movwf   brightness_step
 
