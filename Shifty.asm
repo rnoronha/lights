@@ -318,32 +318,62 @@ brightness_lights   ;Takes an address in W that points to an array of eight byte
 
 brightness_next_step
 
-        movlw   0x8
-        banksel offset
-        movwf   offset ;it's easier to start at the last bit and work our way back
-                       ;Note that we're off by one, that makes life easier because all we can check for is zero
-        banksel src
-        movfw   src
-        movwf   FSR   ;Point to the start of our brightness array
-
-brightness_build_temp ;If your brightness byte < current step, you're off
-                      ;Otherwise, you're on
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness, W
+        banksel temp
+        rrf     temp, F
 
         banksel brightness_step
         movfw   brightness_step
-        subwf   INDF, W         ; Subtract led brightness value from current brightness step
-                                ; So if led brightness >= current step, C = 1
-                                ; Else if brightness step < current step, C = 0
-                                ;I think
-
+        banksel brightness
+        subwf   brightness+1, W
         banksel temp
-        rrf     temp, F         ;Which means that when we rotate, carry comes in
-                                ;and its based on brightness step vs current step
-        incf    FSR, F          ;And then next bit
+        rrf     temp, F
 
-        banksel offset
-        decfsz  offset, F
-        goto    brightness_build_temp
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+2, W
+        banksel temp
+        rrf     temp, F
+
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+3, W
+        banksel temp
+        rrf     temp, F
+
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+4, W
+        banksel temp
+        rrf     temp, F
+
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+5, W
+        banksel temp
+        rrf     temp, F
+
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+6, W
+        banksel temp
+        rrf     temp, F
+
+        banksel brightness_step
+        movfw   brightness_step
+        banksel brightness
+        subwf   brightness+7, W
+        banksel temp
+        rrf     temp, F
+
 
 brightness_end_step
         banksel temp
